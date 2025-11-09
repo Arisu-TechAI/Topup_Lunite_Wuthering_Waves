@@ -1,0 +1,44 @@
+[
+  {
+    "id": "P-0001",
+    "name": "60 Lunite",
+    "price": 14000,
+    "stock": 9,
+    "type": "topup"
+  },
+  {
+    "id": "P-0002",
+    "name": "300 Lunite",
+    "price": 68000,
+    "stock": 10,
+    "type": "topup"
+  },
+  {
+    "id": "P-0003",
+    "name": "980 Lunite",
+    "price": 203000,
+    "stock": 10,
+    "type": "topup"
+  },
+  {
+    "id": "P-0004",
+    "name": "1980 Lunite",
+    "price": 405000,
+    "stock": 10,
+    "type": "topup"
+  },
+  {
+    "id": "P-0005",
+    "name": "Lunite Subscription",
+    "price": 68000,
+    "stock": 9,
+    "type": "subscription"
+  },
+  {
+    "id": "P-0006",
+    "name": "1680 Lunite",
+    "price": 1899000,
+    "stock": 10,
+    "type": "topup"
+  }
+]
