@@ -1,13 +1,10 @@
-# Nama  : Arizky Saputra
-# NIM   : 2509116088
-# Kelas : Sistem Informasi (C)
-
 import json
 import os
 import re
 from datetime import datetime, timedelta
 from prettytable import PrettyTable
 import pwinput
+import matplotlib.pyplot as plt
 
 # Mengambil data ke directory
 DATA_DIR = "data"
@@ -16,8 +13,11 @@ PRODUCTS_FILE = os.path.join(DATA_DIR, "produk.json")
 TRANSACTIONS_FILE = os.path.join(DATA_DIR, "data_transaksi.json")
 
 LOCK_DURATION_SECS = 30  # Durasi Kunci akun jika salah password
-VIP_DISCOUNT_PERCENT = 10  # diskon untuk member VIP 
+VIP_DISCOUNT_PERCENT = 7  # diskon default untuk member VIP (sesuai permintaan: 7% untuk pembelian >100rb)
 SUBSCRIPTION_DAYS = 30
+VIP_BONUS_LUNITE = 200  # bonus Lunite untuk VIP pada pembelian >100rb
+VOUCHER_PERCENT_ON_BIG = 3  # voucher 3% jika transaksi >100rb
+VOUCHER_EXPIRY_DAYS = 3  # voucher berlaku 3 hari
 
 # # Utilitas: load/save file ke JSON
 
@@ -89,17 +89,44 @@ def validate_uid(uid):
         return False, "UID harus minimal 8 digit."
     return True, ""
 
-# Pengaturan untuk Voucher
-
-def compute_voucher_percent(amount):
-    # jika >= 100000, 2% per 100k
-    if amount < 100000:
-        return 0
-    times = amount // 100000
-    return int(times * 2)
-
+# ---------- VOUCHER HELPERS ----------
 def gen_voucher_id(existing_ids):
     return next_id('V', existing_ids)
+
+def create_voucher_for_user(user, percent, users):
+    # buat id unik dari semua voucher di semua user
+    existing_vids = []
+    for u in users:
+        for vv in u.get('vouchers', []):
+            existing_vids.append(vv.get('id'))
+    vid = gen_voucher_id(existing_vids)
+    created_at = datetime.now()
+    expiry = created_at + timedelta(days=VOUCHER_EXPIRY_DAYS)
+    v = {
+        'id': vid,
+        'percent': percent,
+        'used': False,
+        'created_at': created_at.strftime("%Y-%m-%d %H:%M:%S"),
+        'expiry': expiry.strftime("%Y-%m-%d %H:%M:%S")
+    }
+    user.setdefault('vouchers', []).append(v)
+    return v
+
+def filter_valid_vouchers(vouchers):
+    """ kembalikan hanya voucher yang belum dipakai dan belum kadaluarsa """
+    res = []
+    now = datetime.now()
+    for v in vouchers:
+        if v.get('used'):
+            continue
+        try:
+            exp = datetime.strptime(v.get('expiry'), "%Y-%m-%d %H:%M:%S")
+            if now <= exp:
+                res.append(v)
+        except Exception:
+            # jika expiry corrupt, ignore voucher
+            continue
+    return res
 
 # Tampilkan tabel produk
 def show_products_table(products, role='member'):
@@ -115,7 +142,8 @@ def show_user_profile(user):
     print(f"ID: {user.get('id')}")
     print(f"Username: {user.get('username')}")
     print(f"Role: {user.get('role')}")
-    print(f"Saldo: Rp{user.get('balance',0)}")
+    print(f"Saldo (Rp): {user.get('balance',0)}")
+    print(f"Lunite: {user.get('lunite',0)}")
     vip_expiry = user.get('vip_expiry')
     if vip_expiry:
         print(f"VIP expiry: {vip_expiry}")
@@ -123,9 +151,10 @@ def show_user_profile(user):
     if pending:
         print(f"Pending subscription extension: {pending} hari")
     vouchers = user.get('vouchers',[])
-    if vouchers:
-        vs = ', '.join([f"{v['id']}({v['percent']}%){' used' if v.get('used') else ''}" for v in vouchers])
-        print(f"Vouchers: {vs}")
+    valid_vs = filter_valid_vouchers(vouchers)
+    if valid_vs:
+        vs = ', '.join([f"{v['id']}({v['percent']}%){' used' if v.get('used') else ''}" for v in valid_vs])
+        print(f"Vouchers aktif: {vs}")
     else:
         print("Vouchers: -")
 
@@ -156,6 +185,7 @@ def register(users):
         'password': password,
         'role': 'member',
         'balance': 0,
+        'lunite': 0,
         'failed_attempts': 0,
         'locked_until': None,
         'vouchers': [],
@@ -238,8 +268,42 @@ def login(users):
         save_json(USERS_FILE, users)
         return None
 
-# Pembelian
+# ---------- Pesan Selamat Datang ----------
+def Pesan_Sambutan():
+    # Ubah nama hari ke Bahasa Indonesia
+    def hari_indonesia(day_name):
+        mapping = {
+            "Monday": "Senin",
+            "Tuesday": "Selasa",
+            "Wednesday": "Rabu",
+            "Thursday": "Kamis",
+            "Friday": "Jumat",
+            "Saturday": "Sabtu",
+            "Sunday": "Minggu"
+        }
+        return mapping.get(day_name, day_name)
 
+    now = datetime.now()
+    day_name = now.strftime("%A")
+    day_name_indo = hari_indonesia(day_name)
+
+    # format tanggal dd-mm-yyyy
+    date_str = now.strftime("%d %B %Y")
+    hour = now.hour
+
+    if 4 <= hour < 10:
+        salam = "Pagi"
+    elif 10 <= hour < 15:
+        salam = "Siang"
+    elif 15 <= hour < 18:
+        salam = "Sore"
+    else:
+        salam = "Malam"
+
+    print(f"Selamat Hari {day_name_indo}, {date_str}. Selamat {salam}!")
+
+
+# Pembelian Lunite
 def buy_lunite_flow(current_user, users, products, transactions):
     print("=== Beli Lunite ===")
     show_products_table(products, role=current_user.get('role'))
@@ -261,18 +325,24 @@ def buy_lunite_flow(current_user, users, products, transactions):
     qty = 1
     # harga berdasarkan role akun
     unit_price = p['price']
-    if current_user.get('role') == 'vip':
+    applied_vip_discount = 0
+    # Jika VIP dan produk > 100rb, berikan special VIP discount (7%) dan bonus Lunite
+    if current_user.get('role') == 'vip' and p['price'] > 100000:
+        applied_vip_discount = VIP_DISCOUNT_PERCENT  # 7% (konstan di atas)
+        unit_price = int(unit_price * (100 - applied_vip_discount) / 100)
+    elif current_user.get('role') == 'vip':
+        # jika VIP tapi produk <=100rb tetap bisa mendapat harga VIP (jika Anda mau).
         unit_price = int(unit_price * (100 - VIP_DISCOUNT_PERCENT) / 100)
 
     subtotal = unit_price * qty
 
-    # pilih voucher
-    usable_vouchers = [v for v in current_user.get('vouchers',[]) if not v.get('used')]
+    # pilih voucher (hanya voucher valid & belum expired)
+    usable_vouchers = filter_valid_vouchers(current_user.get('vouchers', []))
     applied_voucher = None
     if usable_vouchers:
         print("Voucher tersedia:")
         for i,v in enumerate(usable_vouchers,1):
-            print(f"{i}. {v['id']} - {v['percent']}%")
+            print(f"{i}. {v['id']} - {v['percent']}% (exp: {v.get('expiry')})")
         choose = input("Pakai voucher? (masukkan nomor / kosong = tidak): ").strip()
         if choose:
             try:
@@ -280,16 +350,19 @@ def buy_lunite_flow(current_user, users, products, transactions):
                 applied_voucher = usable_vouchers[idx]
             except Exception:
                 applied_voucher = None
+    else:
+        print("Anda Tidak Memiliki Voucher aktif.")
 
     # ringkasan & konfirmasi
     total = subtotal
+    disc = 0
     if applied_voucher:
         disc = int(total * applied_voucher['percent'] / 100)
         total = total - disc
     print("--- Ringkasan Pembelian ---")
     print(f"Produk: {p['name']}")
     print(f"UID tujuan: {uid_game}")
-    print(f"Harga satuan: Rp{unit_price}")
+    print(f"Harga satuan (setelah diskon VIP jika ada): Rp{unit_price}")
     print(f"Subtotal: Rp{subtotal}")
     if applied_voucher:
         print(f"Voucher {applied_voucher['id']} -> {applied_voucher['percent']}% (-Rp{disc})")
@@ -342,7 +415,9 @@ def buy_lunite_flow(current_user, users, products, transactions):
         'total': total,
         'method': method,
         'uid_game': uid_game,
-        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        'created_at': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # tambahan untuk laporan
+        'bonus_lunite': 0
     }
     transactions.append(trx)
     p['stock'] = p.get('stock',0) - qty
@@ -354,18 +429,18 @@ def buy_lunite_flow(current_user, users, products, transactions):
                 v['used'] = True
                 break
 
-    # buat voucher baru jika memenuhi
-    new_v_pct = compute_voucher_percent(total)
-    if new_v_pct > 0:
-        existing_vids = []
-        for u in users:
-            for vv in u.get('vouchers',[]):
-                existing_vids.append(vv['id'])
-        new_vid = gen_voucher_id(existing_vids)
-        new_v = {'id': new_vid, 'percent': new_v_pct, 'used': False}
-        current_user.setdefault('vouchers', []).append(new_v)
-        print(f"Anda mendapat voucher {new_vid} sebesar {new_v_pct}% untuk pembelian berikutnya.")
+    # buat voucher baru jika memenuhi: rule baru -> jika pembelian item dengan harga asli (p['price']) >100rb
+    if p.get('price',0) > 100000:
+        new_v = create_voucher_for_user(current_user, VOUCHER_PERCENT_ON_BIG, users)
+        print(f"Anda mendapat voucher {new_v['id']} sebesar {new_v['percent']}% (berlaku sampai {new_v['expiry']}).")
 
+    # VIP bonus: jika VIP dan harga asli produk >100rb -> bonus 200 Lunite
+    if current_user.get('role') == 'vip' and p.get('price',0) > 100000 and p.get('type') == 'topup':
+        current_user['lunite'] = current_user.get('lunite',0) + VIP_BONUS_LUNITE
+        trx['bonus_lunite'] = VIP_BONUS_LUNITE
+        print(f"Sebagai VIP, Anda mendapat bonus {VIP_BONUS_LUNITE} Lunite!")
+
+    # jika p['type'] == 'subscription' => extend VIP
     if p.get('type') == 'subscription':
         now = datetime.now()
         vip_expiry_str = current_user.get('vip_expiry')
@@ -397,8 +472,8 @@ def buy_lunite_flow(current_user, users, products, transactions):
 
     print("== Invoice ==")
     table = PrettyTable()
-    table.field_names = ['Invoice','User','Produk','Qty','Total','Metode','UID','Tanggal']
-    table.add_row([trx['id'], current_user.get('username'), p.get('name'), trx['qty'], trx['total'], trx['method'], trx['uid_game'], trx['created_at']])
+    table.field_names = ['Invoice','User','Produk','Qty','Total','Metode','UID','Tanggal','BonusLunite']
+    table.add_row([trx['id'], current_user.get('username'), p.get('name'), trx['qty'], trx['total'], trx['method'], trx['uid_game'], trx['created_at'], trx.get('bonus_lunite',0)])
     print(table)
     print("Terima kasih telah berbelanja!")
 
@@ -417,17 +492,51 @@ def topup_balance(current_user, users):
     save_json(USERS_FILE, users)
     print(f"Top up berhasil. Saldo sekarang Rp{current_user['balance']}")
 
-
 def view_transactions(current_user, transactions):
     my = [t for t in transactions if t.get('user_id') == current_user.get('id')]
     if not my:
         print("Belum ada transaksi")
         return
     table = PrettyTable()
-    table.field_names = ['ID','Produk','Qty','Total','Metode','UID','Tgl']
+    table.field_names = ['ID','Produk','Qty','Total','Metode','UID','Tgl','BonusLunite']
     for t in my:
-        table.add_row([t.get('id'), t.get('product_id'), t.get('qty'), t.get('total'), t.get('method'), t.get('uid_game'), t.get('created_at')])
+        table.add_row([t.get('id'), t.get('product_id'), t.get('qty'), t.get('total'), t.get('method'), t.get('uid_game'), t.get('created_at'), t.get('bonus_lunite',0)])
     print(table)
+
+# ---------- Charting untuk Admin ----------
+def admin_show_sales_charts(products, transactions):
+    if not transactions:
+        print("Belum ada transaksi untuk ditampilkan.")
+        return
+    # hitung frekuensi pembelian per produk id
+    counts = {}
+    for t in transactions:
+        pid = t.get('product_id')
+        counts[pid] = counts.get(pid, 0) + (t.get('qty',1) or 1)
+
+    # mapping id -> nama
+    id_to_name = {p['id']: p.get('name', p['id']) for p in products}
+
+    labels = []
+    values = []
+    for pid, cnt in counts.items():
+        labels.append(id_to_name.get(pid, pid))
+        values.append(cnt)
+
+    # Bar chart
+    plt.figure()
+    plt.bar(range(len(values)), values)
+    plt.xticks(range(len(values)), labels, rotation=45, ha='right')
+    plt.title("Jumlah Pembelian per Produk (Bar Chart)")
+    plt.tight_layout()
+    plt.show()
+
+    # Pie chart
+    plt.figure()
+    plt.pie(values, labels=labels, autopct='%1.1f%%')
+    plt.title("Proporsi Pembelian per Produk (Pie Chart)")
+    plt.tight_layout()
+    plt.show()
 
 # Tampilkan Menu
 #Menu user 
@@ -439,7 +548,7 @@ def user_menu(current_user, users, products, transactions):
             #Tampilan menu jika akun adalah jenis VIP
             if current_user.get('role') == 'vip':
                 print('--- Menu VIP ---')
-                print('1. Lihat Produk (Harga VIP)')
+                print('1. Lihat Produk (Harga VIP & bonus untuk >100rb)')
                 print('2. Top Up Saldo')
                 print('3. Beli Lunite')
                 print('4. Riwayat Transaksi')
@@ -484,7 +593,8 @@ def admin_menu(users, products, transactions):
             print('4. Hapus Produk')
             print('5. Lihat Pengguna')
             print('6. Lihat Transaksi')
-            print('7. Logout')
+            print('7. Statistik Penjualan (Chart)')
+            print('8. Logout')
             c = input('Pilih: ').strip()
             if c == '1':
                 show_products_table(products)
@@ -496,9 +606,10 @@ def admin_menu(users, products, transactions):
                 except ValueError:
                     print('Harga/stok harus angka')
                     continue
+                ttype = input("Tipe produk (topup/subscription/other) [default topup]: ").strip() or "topup"
                 existing = [p.get('id') for p in products if p.get('id')]
                 pid = next_id('P', existing)
-                products.append({'id': pid, 'name': name, 'price': price, 'stock': stock, 'type':'topup'})
+                products.append({'id': pid, 'name': name, 'price': price, 'stock': stock, 'type': ttype})
                 save_json(PRODUCTS_FILE, products)
                 print('Produk ditambahkan')
             elif c == '3':
@@ -532,17 +643,21 @@ def admin_menu(users, products, transactions):
                 print('Produk dihapus')
             elif c == '5':
                 table = PrettyTable()
-                table.field_names = ['ID','Username','Role','Saldo','Failed','Locked','VIP Expiry']
+                table.field_names = ['ID','Username','Role','Saldo','Lunite','Failed','Locked','VIP Expiry']
                 for u in users:
-                    table.add_row([u.get('id'), u.get('username'), u.get('role'), u.get('balance'), u.get('failed_attempts'), u.get('locked_until'), u.get('vip_expiry')])
+                    table.add_row([u.get('id'), u.get('username'), u.get('role'), u.get('balance'), u.get('lunite',0), u.get('failed_attempts'), u.get('locked_until'), u.get('vip_expiry')])
                 print(table)
             elif c == '6':
                 table = PrettyTable()
-                table.field_names = ['ID','User','Produk','Qty','Total','Metode','UID','Tgl']
+                table.field_names = ['ID','User','Produk','Qty','Total','Metode','UID','Tgl','BonusLunite']
                 for t in transactions:
-                    table.add_row([t.get('id'), t.get('user_id'), t.get('product_id'), t.get('qty'), t.get('total'), t.get('method'), t.get('uid_game'), t.get('created_at')])
+                    table.add_row([t.get('id'), t.get('user_id'), t.get('product_id'), t.get('qty'), t.get('total'), t.get('method'), t.get('uid_game'), t.get('created_at'), t.get('bonus_lunite',0)])
                 print(table)
             elif c == '7':
+                # tampilkan charts
+
+                admin_show_sales_charts(products, transactions)
+            elif c == '8': #Log out
                 break
             else:
                 print('Pilihan tidak valid')
@@ -564,6 +679,7 @@ def main():
         u.setdefault('locked_until',None)
         u.setdefault('vouchers',[])
         u.setdefault('balance',0)
+        u.setdefault('lunite',0)
         u.setdefault('vip_expiry',None)
         u.setdefault('pending_subscription_days',0)
 
@@ -571,6 +687,8 @@ def main():
 
     try:
         while True:
+            # Tampilkan Pesan Sambutan Ketika kembali ke menu utama
+            Pesan_Sambutan()
             print('=== Toko Top Up Lunite Wuthering Waves ===')
             print('1. Login')
             print('2. Registrasi')
