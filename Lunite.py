@@ -13,7 +13,7 @@ PRODUCTS_FILE = os.path.join(DATA_DIR, "produk.json")
 TRANSACTIONS_FILE = os.path.join(DATA_DIR, "data_transaksi.json")
 
 LOCK_DURATION_SECS = 30  # Durasi Kunci akun jika salah password
-VIP_DISCOUNT_PERCENT = 7  # diskon default untuk member VIP (sesuai permintaan: 7% untuk pembelian >100rb)
+VIP_DISCOUNT_PERCENT = 7  # diskon default untuk member VIP (7% untuk pembelian >100rb)
 SUBSCRIPTION_DAYS = 30
 VIP_BONUS_LUNITE = 200  # bonus Lunite untuk VIP pada pembelian >100rb
 VOUCHER_PERCENT_ON_BIG = 3  # voucher 3% jika transaksi >100rb
@@ -714,3 +714,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
